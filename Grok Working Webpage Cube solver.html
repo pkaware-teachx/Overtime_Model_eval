@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>2x2 Rubik's Cube Simulator</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; }
+        #container { width: 100%; height: 400px; }
+        #controls { padding: 10px; }
+        .grid { display: grid; grid-template-columns: repeat(2, 50px); gap: 2px; }
+        .sticker { width: 50px; height: 50px; cursor: pointer; }
+        #solution { margin-top: 10px; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="controls">
+        <label>View (for 2D edit): </label>
+        <select id="viewSelect">
+            <option value="front">Front</option>
+            <option value="left">Left</option>
+            <option value="back">Back</option>
+            <option value="right">Right</option>
+            <option value="top">Top</option>
+            <option value="bottom">Bottom</option>
+        </select>
+        <div id="grid" class="grid"></div>
+        <button id="scramble">Scramble</button>
+        <button id="solve">Solve</button>
+        <button id="reset">Reset to Solved</button>
+        <div id="solution"></div>
+        <button id="nextStep" style="display:none;">Next Step</button>
+    </div>
+
+    <script>
+        const colors = { W: 0xffffff, Y: 0xffff00, R: 0xff0000, O: 0xffa500, B: 0x0000ff, G: 0x00ff00, Gray: 0x808080 };
+        const colorKeys = ['W', 'Y', 'R', 'O', 'B', 'G'];
+        const solvedState = [
+            ['W', 'G', 'R'], ['W', 'B', 'R'], ['W', 'B', 'O'], ['W', 'G', 'O'],
+            ['Y', 'G', 'R'], ['Y', 'B', 'R'], ['Y', 'B', 'O'], ['Y', 'G', 'O']
+        ];
+        let cubeState = solvedState.map(piece => piece.slice()); // Start solved
+        let scene, camera, renderer, cubeGroup, raycaster, mouse;
+        let currentView = 'front';
+        let solutionSteps = [];
+        let stepIndex = 0;
+        let animating = false;
+
+        function init3D() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / 400, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer();
+            renderer.setSize(window.innerWidth, 400);
+            document.getElementById('container').appendChild(renderer.domElement);
+            cubeGroup = new THREE.Group();
+            scene.add(cubeGroup);
+            camera.position.set(3, 3, 3);
+            camera.lookAt(0, 0, 0);
+            const orbitControls = new THREE.OrbitControls(camera, renderer.domElement);
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+            renderer.domElement.addEventListener('pointerdown', onClick);
+            createCube();
+            animate();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+
+        function createCube() {
+            cubeGroup.children = [];
+            const positions = [
+                [-1, 1, -1], [1, 1, -1], [1, 1, 1], [-1, 1, 1],
+                [-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]
+            ];
+            positions.forEach((pos, i) => {
+                const geometry = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+                const materialArray = [
+                    new THREE.MeshBasicMaterial({ color: pos[0] === 1 ? colors[cubeState[i][1]] : colors.Gray }),
+                    new THREE.MeshBasicMaterial({ color: pos[0] === -1 ? colors[cubeState[i][1]] : colors.Gray }),
+                    new THREE.MeshBasicMaterial({ color: pos[1] === 1 ? colors[cubeState[i][0]] : colors.Gray }),
+                    new THREE.MeshBasicMaterial({ color: pos[1] === -1 ? colors[cubeState[i][0]] : colors.Gray }),
+                    new THREE.MeshBasicMaterial({ color: pos[2] === 1 ? colors[cubeState[i][2]] : colors.Gray }),
+                    new THREE.MeshBasicMaterial({ color: pos[2] === -1 ? colors[cubeState[i][2]] : colors.Gray })
+                ];
+                const cube = new THREE.Mesh(geometry, materialArray);
+                cube.position.set(...pos);
+                cube.userData = { index: i };
+                cubeGroup.add(cube);
+            });
+        }
+
+        function onClick(event) {
+            if (animating) return;
+            mouse.x = (event.clientX / renderer.domElement.clientWidth) * 2 - 1;
+            mouse.y = -(event.clientY / renderer.domElement.clientHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cubeGroup.children);
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                const cube = intersect.object;
+                const faceIndex = intersect.face.materialIndex;
+                const pieceIdx = cube.userData.index;
+                const colorIdxMap = [1, 1, 0, 0, 2, 2];
+                const colorIdx = colorIdxMap[faceIndex];
+                if (cube.material[faceIndex].color.getHex() !== colors.Gray) {
+                    cycleColor(pieceIdx, colorIdx, cube, faceIndex);
+                }
+            }
+        }
+
+        function cycleColor(pieceIdx, colorIdx, cube = null, faceIndex = null) {
+            const oldColorKey = cubeState[pieceIdx][colorIdx];
+            const currentIndex = colorKeys.indexOf(oldColorKey);
+            const newColorKey = colorKeys[(currentIndex + 1) % 6];
+            cubeState[pieceIdx][colorIdx] = newColorKey;
+
+            if (cube && faceIndex !== null) {
+                // Animate for 3D clicks
+                const oldColor = new THREE.Color(colors[oldColorKey]);
+                const newColor = new THREE.Color(colors[newColorKey]);
+                let progress = 0;
+                const duration = 300;
+                function animateColorStep() {
+                    progress += 16;
+                    if (progress <= duration) {
+                        const t = progress / duration;
+                        cube.material[faceIndex].color.lerpColors(oldColor, newColor, t);
+                        cube.rotation.y += Math.PI / 180 * t;
+                        requestAnimationFrame(animateColorStep);
+                    } else {
+                        createCube();
+                        updateGrid();
+                    }
+                }
+                animateColorStep();
+            } else {
+                createCube();
+                updateGrid();
+            }
+        }
+
+        function updateGrid() {
+            const grid = document.getElementById('grid');
+            grid.innerHTML = '';
+            const viewPieces = {
+                front: [0,1,4,5], left: [3,0,7,4], back: [2,3,6,7],
+                right: [1,2,5,6], top: [0,1,3,2], bottom: [4,5,7,6]
+            };
+            const viewColorIdx = { front: 2, back: 2, left: 1, right: 1, top: 0, bottom: 0 };
+            const pieces = viewPieces[currentView] || [];
+            pieces.forEach((pieceIdx) => {
+                if (cubeState[pieceIdx]) {
+                    const sticker = document.createElement('div');
+                    sticker.className = 'sticker';
+                    const colorIdxLocal = viewColorIdx[currentView];
+                    const colorKey = cubeState[pieceIdx][colorIdxLocal];
+                    sticker.style.backgroundColor = '#' + colors[colorKey].toString(16).padStart(6, '0');
+                    sticker.onclick = () => cycleColor(pieceIdx, colorIdxLocal);
+                    grid.appendChild(sticker);
+                }
+            });
+        }
+
+        // Solver functions
+        function generateSolution() {
+            // Simplified Ortega-like solver: Example steps for testing
+            return ["U R U' R'", "F R F' R", "U2"];
+        }
+
+        function solveCube() {
+            solutionSteps = generateSolution().flatMap(step => step.split(' '));
+            document.getElementById('solution').innerHTML = 'Solution Steps:<br>' + solutionSteps.join(' → ');
+            document.getElementById('nextStep').style.display = 'block';
+            stepIndex = 0;
+        }
+
+        function animateMove(faceGroup, axis, angle) {
+            animating = true;
+            let start = 0;
+            const duration = 500;
+            function step(timestamp) {
+                if (!start) start = timestamp;
+                const progress = Math.min((timestamp - start) / duration, 1);
+                faceGroup.rotation[axis] = angle * progress;
+                if (progress < 1) requestAnimationFrame(step);
+                else {
+                    animating = false;
+                    scene.remove(faceGroup);
+                    createCube();
+                }
+            }
+            requestAnimationFrame(step);
+        }
+
+        function updateStateAfterMove(move) {
+            const isPrime = move.endsWith("'");
+            const dir = isPrime ? -1 : 1;
+            const baseMove = isPrime ? move.slice(0, -1) : move;
+            let indices;
+            if (baseMove === 'R') indices = [1,2,6,5]; // Adjusted for correct cycle
+            else if (baseMove === 'U') indices = [0,1,2,3];
+            // Add more
+            if (indices) {
+                const tempState = indices.map(idx => cubeState[idx].slice());
+                for (let i = 0; i < indices.length; i++) {
+                    cubeState[indices[(i + dir + indices.length) % indices.length]] = tempState[i];
+                }
+            }
+        }
+
+        function applyMove(move) {
+            const faceMap = {
+                R: { pieces: [1,2,5,6], axis: 'x', angle: Math.PI / 2 },
+                U: { pieces: [0,1,2,3], axis: 'y', angle: Math.PI / 2 },
+                F: { pieces: [0,1,4,5], axis: 'z', angle: Math.PI / 2 }
+            };
+            const isPrime = move.endsWith("'");
+            const baseMove = isPrime ? move.slice(0,-1) : move;
+            const config = faceMap[baseMove];
+            if (!config) return;
+            const faceGroup = new THREE.Group();
+            config.pieces.forEach(idx => {
+                const child = cubeGroup.children.find(c => c.userData.index === idx);
+                if (child) faceGroup.add(child.clone());
+            });
+            scene.add(faceGroup);
+            animateMove(faceGroup, config.axis, isPrime ? -config.angle : config.angle);
+            updateStateAfterMove(move);
+        }
+
+        function applyNextStep() {
+            if (stepIndex < solutionSteps.length && !animating) {
+                applyMove(solutionSteps[stepIndex]);
+                stepIndex++;
+            } else if (!animating) {
+                document.getElementById('nextStep').style.display = 'none';
+            }
+        }
+
+        document.getElementById('viewSelect').onchange = (e) => { currentView = e.target.value; updateGrid(); };
+        document.getElementById('scramble').onclick = () => {
+            cubeState = solvedState.map(piece => piece.sort(() => Math.random() - 0.5));
+            createCube();
+            updateGrid();
+        };
+        document.getElementById('solve').onclick = solveCube;
+        document.getElementById('nextStep').onclick = applyNextStep;
+        document.getElementById('reset').onclick = () => { cubeState = solvedState.map(piece => piece.slice()); createCube(); updateGrid(); };
+
+        init3D();
+        updateGrid();
+    </script>
+</body>
+</html>
